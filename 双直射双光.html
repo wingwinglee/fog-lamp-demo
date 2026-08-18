@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>双直射双光透镜雾灯 - 手机直播展示</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            background: #080c12;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            touch-action: manipulation;
+        }
+        .container {
+            background: #10171f;
+            padding: 12px 10px 16px 10px;
+            border-radius: 20px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.9);
+            width: 100%;
+            max-width: 420px;
+            margin: 5px;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background: #0a1119;
+            border-radius: 12px;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.6);
+            width: 100%;
+            height: auto;
+            aspect-ratio: 400 / 720;
+            touch-action: manipulation;
+            cursor: pointer;
+        }
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 12px;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+        }
+        .btn {
+            background: #1e2a36;
+            border: none;
+            padding: 10px 0;
+            border-radius: 30px;
+            color: #b0c8dd;
+            font-weight: 700;
+            font-size: 15px;
+            cursor: pointer;
+            transition: 0.2s ease;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.05);
+            flex: 1;
+            text-align: center;
+            touch-action: manipulation;
+            letter-spacing: 0.5px;
+        }
+        .btn:active {
+            transform: scale(0.95);
+        }
+        .btn.active {
+            background: #f5b342;
+            color: #0b1017;
+            box-shadow: 0 0 30px rgba(245, 179, 66, 0.25);
+            border-color: #f5b342;
+        }
+        .btn.active-light {
+            background: #4a8ccf;
+            color: #fff;
+            box-shadow: 0 0 25px rgba(74, 140, 207, 0.2);
+            border-color: #4a8ccf;
+        }
+        .status {
+            background: #18222e;
+            padding: 8px 14px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 13px;
+            border: 1px solid rgba(255,255,255,0.04);
+            color: #8aa3bc;
+            white-space: nowrap;
+            min-width: 80px;
+            text-align: center;
+        }
+        .status span {
+            color: #f5b342;
+        }
+        .status .high-text {
+            color: #f5b342;
+        }
+        .hint {
+            color: #4a637a;
+            font-size: 11px;
+            text-align: center;
+            width: 100%;
+            margin-top: 6px;
+            letter-spacing: 0.3px;
+        }
+        .hint em {
+            font-style: normal;
+            background: #1a2632;
+            padding: 2px 10px;
+            border-radius: 12px;
+            margin: 0 4px;
+        }
+        @media (max-width: 400px) {
+            .btn { font-size: 13px; padding: 8px 0; }
+            .status { font-size: 11px; padding: 6px 10px; min-width: 60px; }
+            .container { padding: 8px 6px 10px 6px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <canvas id="canvas" width="400" height="720"></canvas>
+    <div class="controls">
+        <div class="btn-group">
+            <button class="btn active" id="btnToggle">🔄 切换</button>
+            <button class="btn" id="btnReset">⟲ 重置</button>
+        </div>
+        <div class="status" id="statusDisplay">
+            🌙 <span id="modeLabel">近光</span>
+        </div>
+    </div>
+    <div class="hint">
+        <em>👆 点击画面</em> 或 <em>␣ 空格</em> 切换 近光/远光
+    </div>
+</div>
+
+<script>
+    (function() {
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const modeLabel = document.getElementById('modeLabel');
+        const statusDisplay = document.getElementById('statusDisplay');
+        const btnToggle = document.getElementById('btnToggle');
+        const btnReset = document.getElementById('btnReset');
+
+        const W = 400, H = 720;
+
+        // ===== 状态 =====
+        let isHighBeam = false;
+        let shutterOffset = 0;
+        let shutterOffsetSingle = 0;
+        let targetShutterOffset = 0;
+        let targetShutterOffsetSingle = 0;
+        let time = 0;
+        let touchCooldown = false;
+
+        // ===== 粒子系统 (精简, 适配手机性能) =====
+        let particles = [];
+        const PARTICLE_COUNT = 40;
+
+        class Particle {
+            constructor() { this.reset(true); }
+            reset(init) {
+                this.type = Math.floor(Math.random() * 3);
+                if (this.type === 0) {
+                    this.lensIndex = Math.random() < 0.5 ? 0 : 1;
+                } else {
+                    this.lensIndex = 0;
+                }
+                this.angle = (Math.random() - 0.5) * 0.7;
+                this.progress = Math.random();
+                this.speed = 0.008 + Math.random() * 0.015;
+                this.size = 1.5 + Math.random() * 2.5;
+                this.alpha = 0.3 + Math.random() * 0.4;
+                this.hue = 38 + Math.random() * 20;
+            }
+            update() {
+                this.progress += this.speed;
+                if (this.progress > 1) {
+                    this.reset(false);
+                    this.progress = 0;
+                }
+            }
+        }
+
+        function initParticles() {
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                particles.push(new Particle());
+            }
+        }
+        initParticles();
+
+        // ===== 绘图核心 =====
+        function drawScene() {
+            time += 0.025;
+            ctx.clearRect(0, 0, W, H);
+
+            // 背景
+            const grad = ctx.createRadialGradient(200, 380, 80, 200, 400, 500);
+            grad.addColorStop(0, '#121c28');
+            grad.addColorStop(1, '#060a0f');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, W, H);
+
+            // ---- 标题 ----
+            ctx.font = 'bold 15px "Segoe UI", sans-serif';
+            ctx.fillStyle = '#8aaac8';
+            ctx.textAlign = 'center';
+            ctx.fillText('⚡ 雾灯技术方案对比', 200, 30);
+            ctx.font = '10px sans-serif';
+            ctx.fillStyle = '#4a6a82';
+            ctx.fillText('双直射双光  VS  单直射双光  VS  反射单光', 200, 48);
+            ctx.textAlign = 'left';
+
+            // ---- 绘制三种方案结构 (上半) ----
+            // 双直射双光 (x=30)
+            drawOpticalSystem(30, 72, '双直射双光', '#f5b342', true);
+            // 单直射双光 (x=155)
+            drawOpticalSystem(155, 72, '单直射双光', '#4a8ccf', false);
+            // 反射型单光 (x=280)
+            drawReflectorSystem(280, 72, '反射单光', '#7a8a9a');
+
+            // ---- 绘制光型投影 (下半) ----
+            drawProjectionPanels();
+
+            // ---- 粒子 ----
+            drawParticles();
+
+            // ---- 模式状态横幅 ----
+            ctx.save();
+            ctx.fillStyle = isHighBeam ? 'rgba(245,179,66,0.12)' : 'rgba(138,163,188,0.08)';
+            ctx.beginPath();
+            ctx.roundRect(20, 660, 360, 32, 16);
+            ctx.fill();
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = isHighBeam ? '#f5b342' : '#8aa3bc';
+            ctx.fillText(isHighBeam ? '🔆 远光模式 · 双灯珠聚光增强' : '🌙 近光模式 · 防眩Z型切线', 200, 682);
+            ctx.textAlign = 'left';
+            ctx.restore();
+
+            // ---- 小标注 ----
+            ctx.font = '8px sans-serif';
+            ctx.fillStyle = '#3a5a72';
+            ctx.textAlign = 'center';
+            ctx.fillText('剖面示意 · 点击切换', 200, 714);
+            ctx.textAlign = 'left';
+        }
+
+        // ===== 光学系统 (缩放适配) =====
+        function drawOpticalSystem(ox, oy, title, color, isDual) {
+            const isThisHigh = isHighBeam;
+            const offset = isDual ? shutterOffset : shutterOffsetSingle;
+            const blockUp = !isThisHigh;
+
+            ctx.save();
+
+            // 背景框
+            ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(ox-2, oy-6, 100, 110);
+
+            // 标题
+            ctx.font = 'bold 8px "Segoe UI", sans-serif';
+            ctx.fillStyle = '#b0c8dd';
+            ctx.textAlign = 'center';
+            ctx.fillText(title, ox+48, oy+8);
+            ctx.textAlign = 'left';
+
+            // 模式标签
+            ctx.font = 'bold 7px sans-serif';
+            ctx.fillStyle = isThisHigh ? '#f5b342' : '#8aa3bc';
+            ctx.textAlign = 'center';
+            ctx.fillText(isThisHigh ? '🔆 远光' : '🌙 近光', ox+48, oy-2);
+            ctx.textAlign = 'left';
+
+            const lenses = isDual ? [0, 1] : [0];
+            const lensOffsets = isDual ? [-22, 22] : [0];
+
+            lenses.forEach((idx) => {
+                const lx = ox + 28 + (isDual ? lensOffsets[idx] : 0);
+                const ly = oy + 42;
+
+                // LED
+                const ledGrad = ctx.createRadialGradient(lx-8, ly-4, 2, lx-4, ly, 10);
+                ledGrad.addColorStop(0, '#ffe88a');
+                ledGrad.addColorStop(0.5, '#ffb347');
+                ledGrad.addColorStop(1, 'rgba(200,100,20,0)');
+                ctx.fillStyle = ledGrad;
+                ctx.beginPath();
+                ctx.arc(lx-6, ly-2, 10, 0, Math.PI*2);
+                ctx.fill();
+
+                ctx.fillStyle = '#ffdd77';
+                ctx.shadowColor = '#ffb347';
+                ctx.shadowBlur = 12;
+                ctx.beginPath();
+                ctx.arc(lx-6, ly-2, 4, 0, Math.PI*2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+
+                // 透镜
+                ctx.save();
+                ctx.shadowColor = 'rgba(100,180,255,0.1)';
+                ctx.shadowBlur = 8;
+                ctx.strokeStyle = 'rgba(180,210,240,0.25)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.ellipse(lx+4, ly, 13, 20, 0, 0, Math.PI*2);
+                ctx.stroke();
+                const lensGrad = ctx.createRadialGradient(lx+2, ly-6, 4, lx+4, ly, 18);
+                lensGrad.addColorStop(0, 'rgba(200,230,255,0.08)');
+                lensGrad.addColorStop(1, 'rgba(60,100,160,0.08)');
+                ctx.fillStyle = lensGrad;
+                ctx.beginPath();
+                ctx.ellipse(lx+4, ly, 13, 20, 0, 0, Math.PI*2);
+                ctx.fill();
+                ctx.restore();
+
+                // 遮光板
+                const shutterY = ly - 18 + offset;
+                ctx.save();
+                ctx.shadowColor = 'rgba(0,0,0,0.4)';
+                ctx.shadowBlur = 6;
+                const gradMetal = ctx.createLinearGradient(lx-12, shutterY-4, lx+12, shutterY+4);
+                gradMetal.addColorStop(0, '#3a4a5a');
+                gradMetal.addColorStop(0.5, '#5c7085');
+                gradMetal.addColorStop(1, '#2a3848');
+                ctx.fillStyle = gradMetal;
+                ctx.beginPath();
+                ctx.roundRect(lx-14, shutterY-5, 28, 11, 2);
+                ctx.fill();
+                ctx.restore();
+
+                // 光线
+                for (let i = 0; i < 8; i++) {
+                    const t = i / 7;
+                    const beamWidth = isThisHigh ? 0.8 : 0.45;
+                    const angleOffset = (t - 0.5) * beamWidth * 1.2;
+                    let angle = angleOffset + 0.05;
+                    if (blockUp && angle < 0.02) continue;
+
+                    const startX = lx + 10;
+                    const startY = ly - 1 + angle * 28;
+                    const len = 30 + Math.sin(time*0.8 + i + lx) * 6;
+                    const endX = startX + len * Math.cos(angle * 0.4);
+                    const endY = startY + len * Math.sin(angle * 0.4);
+                    const alpha = 0.10 + 0.15 * (1 - Math.abs(angle) / beamWidth);
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                    ctx.strokeStyle = `rgba(255, 200, 100, ${alpha})`;
+                    ctx.lineWidth = 1.2;
+                    ctx.shadowColor = color;
+                    ctx.shadowBlur = 3;
+                    ctx.stroke();
+                }
+                ctx.shadowBlur = 0;
+
+                // LED标注
+                if (isDual) {
+                    ctx.font = '6px sans-serif';
+                    ctx.fillStyle = '#5a7a93';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`LED${idx+1}`, lx-4, ly+26);
+                    ctx.textAlign = 'left';
+                }
+            });
+
+            // 双直射特殊标注
+            if (isDual) {
+                ctx.font = '6px sans-serif';
+                ctx.fillStyle = '#f5b342';
+                ctx.textAlign = 'center';
+                ctx.fillText('✦双灯珠', ox+48, oy+88);
+                if (isThisHigh) {
+                    ctx.fillStyle = '#ff8844';
+                    ctx.font = 'bold 7px sans-serif';
+                    ctx.fillText('🔥聚光', ox+48, oy+100);
+                }
+                ctx.textAlign = 'left';
+            } else {
+                ctx.font = '6px sans-serif';
+                ctx.fillStyle = '#4a7a9a';
+                ctx.textAlign = 'center';
+                ctx.fillText('单灯珠', ox+48, oy+88);
+                ctx.textAlign = 'left';
+            }
+
+            ctx.restore();
+        }
+
+        // ===== 反射型单光 =====
+        function drawReflectorSystem(ox, oy, title, color) {
+            ctx.save();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(ox-2, oy-6, 100, 110);
+
+            ctx.font = 'bold 8px "Segoe UI", sans-serif';
+            ctx.fillStyle = '#b0c8dd';
+            ctx.textAlign = 'center';
+            ctx.fillText(title, ox+48, oy+8);
+            ctx.textAlign = 'left';
+
+            ctx.font = 'bold 7px sans-serif';
+            ctx.fillStyle = '#6a7a8a';
+            ctx.textAlign = 'center';
+            ctx.fillText('🔅 常亮', ox+48, oy-2);
+            ctx.textAlign = 'left';
+
+            // 反光碗
+            ctx.save();
+            ctx.shadowColor = 'rgba(0,0,0,0.2)';
+            ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.moveTo(ox+10, oy+20);
+            ctx.quadraticCurveTo(ox+20, oy+2, ox+50, oy+20);
+            ctx.quadraticCurveTo(ox+70, oy+38, ox+50, oy+50);
+            ctx.quadraticCurveTo(ox+20, oy+68, ox+10, oy+50);
+            ctx.closePath();
+            const refGrad = ctx.createLinearGradient(ox+10, oy+10, ox+60, oy+60);
+            refGrad.addColorStop(0, '#2a3a4a');
+            refGrad.addColorStop(0.5, '#4a6078');
+            refGrad.addColorStop(1, '#1a2a3a');
+            ctx.fillStyle = refGrad;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(180,210,240,0.08)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // 灯泡
+            const bulbGrad = ctx.createRadialGradient(ox+30, oy+33, 2, ox+32, oy+35, 8);
+            bulbGrad.addColorStop(0, '#fff5d0');
+            bulbGrad.addColorStop(0.5, '#ffcc66');
+            bulbGrad.addColorStop(1, 'rgba(200,120,40,0)');
+            ctx.fillStyle = bulbGrad;
+            ctx.shadowColor = '#ffb347';
+            ctx.shadowBlur = 14;
+            ctx.beginPath();
+            ctx.arc(ox+32, oy+35, 8, 0, Math.PI*2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // 反射光线
+            for (let i = 0; i < 8; i++) {
+                const t = i / 7;
+                const angleOffset = (t - 0.5) * 0.8;
+                const startX = ox + 40;
+                const startY = oy + 35 + angleOffset * 20;
+                const len = 28 + Math.sin(time + i*0.5) * 4;
+                const endX = startX + len * Math.cos(angleOffset * 0.25);
+                const endY = startY + len * Math.sin(angleOffset * 0.25);
+                const alpha = 0.06 + 0.10 * (1 - Math.abs(angleOffset));
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(endX, endY);
+                ctx.strokeStyle = `rgba(255, 200, 130, ${alpha})`;
+                ctx.lineWidth = 1;
+                ctx.shadowColor = '#ffb347';
+                ctx.shadowBlur = 2;
+                ctx.stroke();
+            }
+            ctx.shadowBlur = 0;
+
+            ctx.font = '6px sans-serif';
+            ctx.fillStyle = '#5a7a93';
+            ctx.textAlign = 'center';
+            ctx.fillText('反射碗', ox+48, oy+88);
+            ctx.textAlign = 'left';
+
+            ctx.restore();
+        }
+
+        // ===== 光型投影面板 (三列) =====
+        function drawProjectionPanels() {
+            const panels = [
+                { x: 18, label: '双直射双光', color: '#f5b342' },
+                { x: 148, label: '单直射双光', color: '#4a8ccf' },
+                { x: 278, label: '反射型单光', color: '#7a8a9a' }
+            ];
+
+            const sy = 310, sw = 115, sh = 90;
+
+            panels.forEach((p, idx) => {
+                const sx = p.x;
+                ctx.save();
+
+                // 面板背景
+                ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = 'rgba(0,0,0,0.4)';
+                ctx.beginPath();
+                ctx.roundRect(sx, sy, sw, sh, 4);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                ctx.roundRect(sx, sy, sw, sh, 4);
+                ctx.stroke();
+
+                // 裁剪
+                ctx.beginPath();
+                ctx.rect(sx+3, sy+3, sw-6, sh-22);
+                ctx.clip();
+
+                const cx = sx + sw/2, cy = sy + sh/2 - 2;
+
+                if (idx === 0) {
+                    // 双直射双光
+                    if (isHighBeam) {
+                        // 远光: 双聚光
+                        const g1 = ctx.createRadialGradient(cx-18, cy-2, 6, cx-14, cy, 32);
+                        g1.addColorStop(0, 'rgba(255,220,150,0.85)');
+                        g1.addColorStop(0.5, 'rgba(255,200,120,0.4)');
+                        g1.addColorStop(1, 'rgba(255,180,80,0)');
+                        ctx.fillStyle = g1;
+                        ctx.beginPath();
+                        ctx.arc(cx-14, cy, 32, 0, Math.PI*2);
+                        ctx.fill();
+
+                        const g2 = ctx.createRadialGradient(cx+18, cy-2, 6, cx+14, cy, 32);
+                        g2.addColorStop(0, 'rgba(255,220,150,0.85)');
+                        g2.addColorStop(0.5, 'rgba(255,200,120,0.4)');
+                        g2.addColorStop(1, 'rgba(255,180,80,0)');
+                        ctx.fillStyle = g2;
+                        ctx.beginPath();
+                        ctx.arc(cx+14, cy, 32, 0, Math.PI*2);
+                        ctx.fill();
+
+                        const g3 = ctx.createRadialGradient(cx, cy-2, 3, cx, cy, 22);
+                        g3.addColorStop(0, 'rgba(255,240,200,0.6)');
+                        g3.addColorStop(1, 'rgba(255,200,130,0)');
+                        ctx.fillStyle = g3;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, 22, 0, Math.PI*2);
+                        ctx.fill();
+
+                        ctx.fillStyle = 'rgba(255,200,100,0.25)';
+                        ctx.font = '12px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('🔥', cx, cy+4);
+                        ctx.textAlign = 'left';
+                    } else {
+                        // 近光: Z型切线
+                        const g1 = ctx.createRadialGradient(cx-2, cy+12, 6, cx, cy+12, 38);
+                        g1.addColorStop(0, 'rgba(255,210,140,0.75)');
+                        g1.addColorStop(0.5, 'rgba(255,180,100,0.35)');
+                        g1.addColorStop(1, 'rgba(255,150,50,0)');
+                        ctx.fillStyle = g1;
+                        ctx.beginPath();
+                        ctx.moveTo(sx+3, cy+12);
+                        ctx.quadraticCurveTo(sx+30, cy+28, sx+55, cy+16);
+                        ctx.quadraticCurveTo(sx+80, cy+4, sx+sw-3, cy-2);
+                        ctx.lineTo(sx+sw-3, sy+sh-19);
+                        ctx.lineTo(sx+3, sy+sh-19);
+                        ctx.closePath();
+                        ctx.fill();
+
+                        ctx.beginPath();
+                        ctx.moveTo(sx+3, cy+18);
+                        ctx.lineTo(sx+35, cy+14);
+                        ctx.lineTo(sx+sw-3, cy-2);
+                        ctx.strokeStyle = 'rgba(255,220,150,0.7)';
+                        ctx.lineWidth = 1.5;
+                        ctx.shadowColor = '#f5b342';
+                        ctx.shadowBlur = 8;
+                        ctx.stroke();
+                        ctx.shadowBlur = 0;
+
+                        ctx.fillStyle = 'rgba(10,20,35,0.25)';
+                        ctx.fillRect(sx+3, sy+3, sw-6, 14);
+                    }
+                } else if (idx === 1) {
+                    // 单直射双光
+                    if (isHighBeam) {
+                        const g1 = ctx.createRadialGradient(cx, cy-2, 6, cx, cy, 36);
+                        g1.addColorStop(0, 'rgba(180,210,240,0.75)');
+                        g1.addColorStop(0.5, 'rgba(140,180,220,0.35)');
+                        g1.addColorStop(1, 'rgba(100,150,200,0)');
+                        ctx.fillStyle = g1;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, 36, 0, Math.PI*2);
+                        ctx.fill();
+                        ctx.fillStyle = 'rgba(180,210,240,0.15)';
+                        ctx.font = '11px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('☀️', cx-4, cy+4);
+                        ctx.textAlign = 'left';
+                    } else {
+                        const g1 = ctx.createRadialGradient(cx-2, cy+12, 6, cx, cy+12, 36);
+                        g1.addColorStop(0, 'rgba(180,210,240,0.65)');
+                        g1.addColorStop(0.5, 'rgba(140,180,220,0.25)');
+                        g1.addColorStop(1, 'rgba(100,150,200,0)');
+                        ctx.fillStyle = g1;
+                        ctx.beginPath();
+                        ctx.moveTo(sx+3, cy+12);
+                        ctx.quadraticCurveTo(sx+30, cy+26, sx+55, cy+16);
+                        ctx.quadraticCurveTo(sx+80, cy+6, sx+sw-3, cy+2);
+                        ctx.lineTo(sx+sw-3, sy+sh-19);
+                        ctx.lineTo(sx+3, sy+sh-19);
+                        ctx.closePath();
+                        ctx.fill();
+
+                        ctx.beginPath();
+                        ctx.moveTo(sx+3, cy+18);
+                        ctx.lineTo(sx+35, cy+14);
+                        ctx.lineTo(sx+sw-3, cy+2);
+                        ctx.strokeStyle = 'rgba(180,210,240,0.5)';
+                        ctx.lineWidth = 1.2;
+                        ctx.shadowColor = '#4a8ccf';
+                        ctx.shadowBlur = 6;
+                        ctx.stroke();
+                        ctx.shadowBlur = 0;
+                        ctx.fillStyle = 'rgba(10,20,35,0.2)';
+                        ctx.fillRect(sx+3, sy+3, sw-6, 10);
+                    }
+                } else {
+                    // 反射型单光
+                    const g1 = ctx.createRadialGradient(cx, cy-2, 10, cx, cy, 34);
+                    g1.addColorStop(0, 'rgba(180,190,200,0.5)');
+                    g1.addColorStop(0.5, 'rgba(140,150,160,0.25)');
+                    g1.addColorStop(1, 'rgba(100,110,120,0)');
+                    ctx.fillStyle = g1;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, 34, 0, Math.PI*2);
+                    ctx.fill();
+                    const g2 = ctx.createRadialGradient(cx-10, cy-5, 3, cx-6, cy-2, 20);
+                    g2.addColorStop(0, 'rgba(200,210,220,0.25)');
+                    g2.addColorStop(1, 'rgba(160,170,180,0)');
+                    ctx.fillStyle = g2;
+                    ctx.beginPath();
+                    ctx.arc(cx-6, cy-2, 20, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.fillStyle = 'rgba(180,190,200,0.12)';
+                    ctx.font = '11px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('💡', cx-4, cy+4);
+                    ctx.textAlign = 'left';
+                }
+
+                ctx.restore();
+
+                // 标签
+                ctx.font = '7px "Segoe UI", sans-serif';
+                ctx.fillStyle = '#6a839b';
+                ctx.textAlign = 'center';
+                ctx.fillText(p.label, sx + sw/2, sy + sh + 12);
+                ctx.textAlign = 'left';
+            });
+        }
+
+        // ===== 粒子 =====
+        function drawParticles() {
+            particles.forEach(p => {
+                p.update();
+
+                let baseX, baseY;
+                if (p.type === 0) {
+                    const idx = p.lensIndex;
+                    baseX = 30 + 28 + (idx === 0 ? -22 : 22);
+                    baseY = 72 + 42;
+                } else if (p.type === 1) {
+                    baseX = 155 + 28;
+                    baseY = 72 + 42;
+                } else {
+                    baseX = 280 + 40;
+                    baseY = 72 + 35;
+                }
+
+                const angle = p.angle * 0.5;
+                const dist = 15 + p.progress * 80;
+                const x = baseX + dist * Math.cos(angle * 0.4);
+                const y = baseY + dist * Math.sin(angle * 0.4);
+
+                let alphaMod = p.alpha;
+                if ((p.type === 0 || p.type === 1) && !isHighBeam) {
+                    if (y < (p.type === 0 ? 72+42 : 72+42) - 18) {
+                        alphaMod *= 0.15;
+                    } else {
+                        alphaMod *= 0.7;
+                    }
+                }
+                if (p.type === 2) alphaMod *= 0.4;
+
+                const grad = ctx.createRadialGradient(x-1, y-1, 1, x, y, p.size+2);
+                grad.addColorStop(0, `hsla(${p.hue}, 100%, 90%, ${alphaMod})`);
+                grad.addColorStop(0.5, `hsla(${p.hue}, 100%, 70%, ${alphaMod*0.7})`);
+                grad.addColorStop(1, `hsla(${p.hue}, 100%, 50%, 0)`);
+                ctx.fillStyle = grad;
+                ctx.shadowColor = '#f5b342';
+                ctx.shadowBlur = 8;
+                ctx.beginPath();
+                ctx.arc(x, y, p.size, 0, Math.PI*2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            });
+        }
+
+        // ===== 切换逻辑 =====
+        function setMode(high) {
+            isHighBeam = high;
+            targetShutterOffset = high ? -18 : 0;
+            targetShutterOffsetSingle = high ? -18 : 0;
+            modeLabel.textContent = high ? '远光' : '近光';
+            modeLabel.className = high ? 'high-text' : '';
+            statusDisplay.innerHTML = high ? '🔆 <span class="high-text">远光</span>' : '🌙 <span id="modeLabel">近光</span>';
+            btnToggle.classList.toggle('active', high);
+            btnToggle.classList.toggle('active-light', !high);
+        }
+
+        function toggleMode() {
+            if (touchCooldown) return;
+            touchCooldown = true;
+            setMode(!isHighBeam);
+            setTimeout(() => { touchCooldown = false; }, 200);
+        }
+
+        // ===== 动画循环 =====
+        function animate() {
+            shutterOffset += (targetShutterOffset - shutterOffset) * 0.12;
+            shutterOffsetSingle += (targetShutterOffsetSingle - shutterOffsetSingle) * 0.12;
+
+            drawScene();
+            requestAnimationFrame(animate);
+        }
+
+        // ===== 扩展 =====
+        if (!CanvasRenderingContext2D.prototype.roundRect) {
+            CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+                if (r > w/2) r = w/2;
+                if (r > h/2) r = h/2;
+                this.moveTo(x + r, y);
+                this.arcTo(x + w, y, x + w, y + h, r);
+                this.arcTo(x + w, y + h, x, y + h, r);
+                this.arcTo(x, y + h, x, y, r);
+                this.arcTo(x, y, x + w, y, r);
+                return this;
+            };
+        }
+
+        // ===== 事件绑定 (适配触屏) =====
+        btnToggle.addEventListener('click', toggleMode);
+        btnToggle.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            toggleMode();
+        });
+        btnReset.addEventListener('click', () => {
+            setMode(false);
+            shutterOffset = 0;
+            shutterOffsetSingle = 0;
+            targetShutterOffset = 0;
+            targetShutterOffsetSingle = 0;
+        });
+        btnReset.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            setMode(false);
+            shutterOffset = 0;
+            shutterOffsetSingle = 0;
+            targetShutterOffset = 0;
+            targetShutterOffsetSingle = 0;
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                toggleMode();
+            }
+        });
+        canvas.addEventListener('click', toggleMode);
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            toggleMode();
+        });
+
+        animate();
+        setMode(false);
+    })();
+</script>
+</body>
+</html>
